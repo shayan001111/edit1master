@@ -38,8 +38,9 @@ echo "Killing any active process listening on Port 443 (TCP)..."
 if command -v fuser >/dev/null 2>&1; then
   fuser -k -n tcp 443 2>/dev/null || true
 else
-  PID_443=$(lsof -t -i tcp:443 2>/dev/null)
-  if [ -not -z "$PID_443" ]; then
+  PID_443=$(lsof -t -i:443 2>/dev/null)
+  if [ ! -z "$PID_443" ]; then
+    echo "Killing process $PID_443 on port 443..."
     kill -9 $PID_443 2>/dev/null || true
   fi
 fi
@@ -48,8 +49,9 @@ echo "Killing any active process listening on Port 53 (UDP)..."
 if command -v fuser >/dev/null 2>&1; then
   fuser -k -n udp 53 2>/dev/null || true
 else
-  PID_53=$(lsof -t -i udp:53 2>/dev/null)
-  if [ -not -z "$PID_53" ]; then
+  PID_53=$(lsof -t -i:53 2>/dev/null)
+  if [ ! -z "$PID_53" ]; then
+    echo "Killing process $PID_53 on port 53..."
     kill -9 $PID_53 2>/dev/null || true
   fi
 fi
@@ -193,4 +195,3 @@ echo -e "\e[32mCOPY AND SAVE YOUR LOCAL CRYPTOGRAPHIC ENCRYPTION KEY:\e[0m"
 echo -e "\e[1;32m$KEY\e[0m"
 echo -e "\e[32m------------------------------------------------------------------\e[0m"
 echo -e "\e[34m==================================================================\e[0m\n"
-EOF
