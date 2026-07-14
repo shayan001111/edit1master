@@ -4,6 +4,7 @@ MasterDnsVPN UDP Port 53 DNS Tunnel Core / Firewall
 Listens on UDP Port 53, sniffs subdomains to authenticate and authorize users,
 tracks real-time bandwidth consumption, and forwards valid packets to the local tunnel backend.
 Highly optimized for low-resource servers (1GB RAM).
+Complements an official/original proxy script core running locally.
 """
 
 import socket
@@ -13,6 +14,11 @@ import os
 import time
 import threading
 import logging
+import json
+
+# Paths
+DB_FILE = "/app/database.db" if os.path.exists("/app") else "database.db"
+CONFIG_FILE = "/app/config.json" if os.path.exists("/app") else "config.json"
 
 # Configurable constants
 LISTEN_HOST = "0.0.0.0"
@@ -21,9 +27,10 @@ BACKEND_DNS_HOST = "127.0.0.1"
 BACKEND_DNS_PORT = 5353       # Port where the real DNS Tunneling daemon (e.g., dnstt-server) runs
 FALLBACK_DNS_HOST = "1.1.1.1" # Standard resolver for non-tunnel DNS queries
 FALLBACK_DNS_PORT = 53
-DB_FILE = "users.db"
-KEY_FILE = "encrypt_key.txt"
 FLUSH_INTERVAL_SEC = 5.0      # SQLite batch update frequency
+
+# Base Domain Fallback
+BASE_TUNNEL_DOMAIN = "net.abrpars.filegear-sg.me"
 
 # Set up logging
 logging.basicConfig(
@@ -37,9 +44,25 @@ logger = logging.getLogger("dns_core")
 pending_traffic = {}
 traffic_lock = threading.Lock()
 
+def load_config():
+    """Loads configuration dynamically from config.json."""
+    global BASE_TUNNEL_DOMAIN
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+                BASE_TUNNEL_DOMAIN = cfg.get("ns_domain", BASE_TUNNEL_DOMAIN).strip()
+                logger.info(f"Loaded NS Domain configuration: {BASE_TUNNEL_DOMAIN}")
+        except Exception as e:
+            logger.warning(f"Failed to parse config.json, using default domain {BASE_TUNNEL_DOMAIN}: {e}")
+
 def init_db():
     """Ensures SQLite is initialized and in WAL mode for safe concurrent access."""
     try:
+        db_dir = os.path.dirname(os.path.abspath(DB_FILE))
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            
         conn = sqlite3.connect(DB_FILE, timeout=10.0)
         cursor = conn.cursor()
         cursor.execute("""
@@ -58,20 +81,6 @@ def init_db():
         logger.info("SQLite Database initialized and configured in WAL mode.")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
-
-def load_encryption_key() -> str:
-    """Loads local encryption key if present."""
-    if os.path.exists(KEY_FILE):
-        try:
-            with open(KEY_FILE, "r") as f:
-                key = f.read().strip()
-                logger.info(f"Loaded local cryptographic key: {key[:4]}...{key[-4:]}")
-                return key
-        except Exception as e:
-            logger.error(f"Error reading encryption key file: {e}")
-    else:
-        logger.warning(f"No encryption key found at {KEY_FILE}. Running without crypto validation.")
-    return ""
 
 def check_user_access(subdomain: str) -> tuple[bool, str]:
     """Queries SQLite to check if a subdomain is registered, active, and within limit."""
@@ -157,13 +166,12 @@ def extract_client_subdomain(qname: str) -> str | None:
       QNAME: 'v25-encoded-payload.user1.net.abrpars.filegear-sg.me'
       Result: 'user1.net.abrpars.filegear-sg.me'
     """
-    base_domain = "net.abrpars.filegear-sg.me"
-    if not qname.endswith(base_domain):
+    if not qname.endswith(BASE_TUNNEL_DOMAIN):
         return None
         
     # Split the qname into parts
     parts = qname.split(".")
-    base_parts = base_domain.split(".")
+    base_parts = BASE_TUNNEL_DOMAIN.split(".")
     
     # We want to isolate '<username>.net.abrpars.filegear-sg.me'
     # By counting parts from the right
@@ -175,11 +183,11 @@ def extract_client_subdomain(qname: str) -> str | None:
     username_index = len(parts) - n_base - 1
     username = parts[username_index]
     
-    return f"{username}.{base_domain}"
+    return f"{username}.{BASE_TUNNEL_DOMAIN}"
 
 def main():
     init_db()
-    key = load_encryption_key()
+    load_config()
     
     # Start periodic stats database flusher
     flusher = threading.Thread(target=flush_traffic_worker, daemon=True)
@@ -257,7 +265,6 @@ def main():
                         sock.sendto(nx_resp, addr)
             else:
                 # Normal/standard DNS query. Forward to Fallback DNS (Cloudflare/Google)
-                # This ensures the server functions like a real, helpful DNS resolver for other domains
                 forward_sock.sendto(data, (FALLBACK_DNS_HOST, FALLBACK_DNS_PORT))
                 try:
                     resp, _ = forward_sock.recvfrom(4096)

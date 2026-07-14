@@ -3,6 +3,7 @@
 MasterDnsVPN Lightweight TCP Gateway & Bandwidth Middleware
 A highly optimized, asynchronous TCP reverse proxy designed for 1GB RAM servers.
 Sniffs SNI from TLS Client Hello without decryption, checks SQLite DB, and batches traffic accounting.
+Complements an official/original proxy script core running locally.
 """
 
 import asyncio
@@ -12,13 +13,17 @@ import sys
 import logging
 import os
 import time
+import json
+
+# Paths
+DB_FILE = "/app/database.db" if os.path.exists("/app") else "database.db"
+CONFIG_FILE = "/app/config.json" if os.path.exists("/app") else "config.json"
 
 # Configurable constants
 LISTEN_HOST = "0.0.0.0"
 LISTEN_PORT = 443
 BACKEND_HOST = "127.0.0.1"
-BACKEND_PORT = 8080
-DB_FILE = "users.db"
+BACKEND_PORT = 8080       # Default fallback port, loaded dynamically below
 FLUSH_INTERVAL_SEC = 5.0  # Database batch update frequency
 MAX_BUFFER_SIZE = 16384    # 16KB TCP buffer for optimal performance
 
@@ -37,9 +42,25 @@ logger = logging.getLogger("gateway")
 pending_traffic = {}
 traffic_lock = asyncio.Lock()
 
+def load_config():
+    """Loads configuration dynamically from config.json."""
+    global BACKEND_PORT
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+                BACKEND_PORT = int(cfg.get("backend_port", BACKEND_PORT))
+                logger.info(f"Loaded backend configuration. Proxy Core Port: {BACKEND_PORT}")
+        except Exception as e:
+            logger.warning(f"Failed to parse config.json, using default port {BACKEND_PORT}: {e}")
+
 def init_db():
     """Initializes SQLite database and tables if they do not exist."""
     try:
+        db_dir = os.path.dirname(os.path.abspath(DB_FILE))
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            
         conn = sqlite3.connect(DB_FILE, timeout=10.0)
         cursor = conn.cursor()
         cursor.execute("""
@@ -245,7 +266,6 @@ async def handle_connection(client_reader: asyncio.StreamReader, client_writer: 
     subdomain = None
     try:
         # 1. Read Client Hello peak payload
-        # Read the TLS Client Hello payload. Generally fits in the first 2-4KB.
         initial_data = await client_reader.read(4096)
         if not initial_data:
             client_writer.close()
@@ -289,7 +309,12 @@ async def handle_connection(client_reader: asyncio.StreamReader, client_writer: 
         backend_to_client = asyncio.create_task(pipe(backend_reader, client_writer, subdomain))
         
         # Wait for either to finish
-        await asyncio.any_completed([client_to_backend, backend_to_client])
+        done, pending = await asyncio.wait(
+            [client_to_backend, backend_to_client],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
         
     except Exception as e:
         logger.error(f"Error handling connection: {e}")
@@ -305,6 +330,9 @@ async def handle_connection(client_reader: asyncio.StreamReader, client_writer: 
 async def main():
     # Setup base database
     init_db()
+    
+    # Load configuration
+    load_config()
     
     # Start background database writer
     asyncio.create_task(periodic_db_flush())
@@ -323,4 +351,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Gateway server shutting down gracefully.")
+        logger.info("Gateway shutting down.")
+    except Exception as e:
+        logger.critical(f"Gateway crashed: {e}")

@@ -1,43 +1,66 @@
 #!/usr/bin/env python3
 """
-MasterDnsVPN Client Management CLI
-Manage SQLite database (users.db) directly from your command line.
-Optimized for manual user/bandwidth management.
+MasterDnsVPN Client Management CLI (Complementary Layer)
+Manage SQLite database (database.db) directly from your command line.
+Optimized for complementary proxy accounting on up to 50 clients.
 """
 
 import sys
 import sqlite3
 import os
+import json
 
-DB_FILE = "users.db"
+# Paths
+DB_FILE = "/app/database.db" if os.path.exists("/app") else "database.db"
+CONFIG_FILE = "/app/config.json" if os.path.exists("/app") else "config.json"
+
+# Base Domain Fallback
 BASE_TUNNEL_DOMAIN = "net.abrpars.filegear-sg.me"
 
+def load_config_domain():
+    """Loads configured NS domain from config.json if available."""
+    global BASE_TUNNEL_DOMAIN
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                cfg = json.load(f)
+                BASE_TUNNEL_DOMAIN = cfg.get("ns_domain", BASE_TUNNEL_DOMAIN).strip()
+        except Exception as e:
+            pass
+
 def init_db():
-    """Initializes SQLite database and tables if they do not exist."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            subdomain TEXT UNIQUE NOT NULL,
-            limit_mb INTEGER NOT NULL,
-            used_mb INTEGER DEFAULT 0 NOT NULL,
-            is_active BOOLEAN DEFAULT 1 NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Initializes SQLite database and tables with WAL mode enabled."""
+    db_dir = os.path.dirname(os.path.abspath(DB_FILE))
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+        
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subdomain TEXT UNIQUE NOT NULL,
+                limit_mb INTEGER NOT NULL,
+                used_mb INTEGER DEFAULT 0 NOT NULL,
+                is_active BOOLEAN DEFAULT 1 NOT NULL
+            )
+        """)
+        cursor.execute("PRAGMA journal_mode=WAL")
+        conn.commit()
+        conn.close()
+        print(f"✅ SQLite DB initialized at [{DB_FILE}] in WAL mode.")
+    except Exception as e:
+        print(f"❌ ERROR initializing database: {e}")
 
 def parse_input_to_subdomain(input_val: str) -> str:
     """
     Converts a username or input string into a full valid subdomain.
-    If 'input_val' is just a username (e.g., 'user1'), it appends '.net.abrpars.filegear-sg.me'.
-    If it's already a full subdomain, it cleans and validates it.
+    If 'input_val' is just a username (e.g., 'user1'), it appends our configured NS domain.
     """
+    load_config_domain()
     cleaned = input_val.lower().strip()
     if not cleaned.endswith(BASE_TUNNEL_DOMAIN):
-        # Treat as simple username and construct the full subdomain
-        # Remove any leading/trailing dots just in case
         username = cleaned.strip(".")
         return f"{username}.{BASE_TUNNEL_DOMAIN}"
     return cleaned
@@ -149,7 +172,8 @@ def list_users():
         print(f"❌ ERROR / خطا: SQLite error - {e}")
 
 def print_usage():
-    print("""
+    load_config_domain()
+    print(f"""
 ==================================================================
                  MasterDnsVPN Management Console
 ==================================================================
@@ -158,7 +182,7 @@ Usage Commands / دستورات مدیریت کاربران:
   1. Add a user / افزودن کاربر جدید:
      python3 manage.py add <username> <limit_mb>
      Example: python3 manage.py add user1 500
-     (This automatically maps to: user1.net.abrpars.filegear-sg.me)
+     (This automatically maps to: user1.{BASE_TUNNEL_DOMAIN})
 
   2. Disable a user / غیرفعال کردن کاربر:
      python3 manage.py disable <username_or_subdomain>
@@ -173,12 +197,13 @@ Usage Commands / دستورات مدیریت کاربران:
      Example: python3 manage.py delete user1
 
   5. View Status & Lists / مشاهده لیست و وضعیت:
-     python3 manage.py status
+     python3 manage.py list
 ==================================================================
 """)
 
 def main():
-    init_db()
+    # Attempt to load NS domain first
+    load_config_domain()
     
     if len(sys.argv) < 2:
         print_usage()
@@ -186,6 +211,14 @@ def main():
         
     action = sys.argv[1].lower()
     
+    if action == "init-db":
+        init_db()
+        sys.exit(0)
+        
+    # Lazy init DB for other actions if file doesn't exist
+    if not os.path.exists(DB_FILE):
+        init_db()
+        
     if action == "add":
         if len(sys.argv) < 4:
             print("❌ ERROR: Missing arguments.\nUsage: python3 manage.py add <username> <limit_mb>")
