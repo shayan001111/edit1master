@@ -1,0 +1,6 @@
+{
+  "name": "MasterDnsVPN Dashboard",
+  "description": "Full-stack management portal, simulator, and DNS benchmark panel for MasterDnsVPN.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
